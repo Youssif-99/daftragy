@@ -1,69 +1,378 @@
-import Image from "next/image";
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import DayChart from '@/components/DayChart';
+import Ledger from '@/components/Ledger';
+import NetHero from '@/components/NetHero';
+import PeriodChips from '@/components/PeriodChips';
+import TopItems from '@/components/TopItems';
+import {
+  buildDashboardSummary,
+  getCairoDayKey,
+  getCairoPeriodStart,
+  type Transaction,
+  type TransactionType,
+} from '@/lib/dashboard';
+import { supabase } from '@/lib/supabase';
+
+type DashboardStatus = 'loading' | 'error' | 'unlinked' | 'empty' | 'ready';
+type TelegramLinkStatus = 'idle' | 'creating' | 'waiting' | 'expired' | 'error' | 'linked';
+
+type TransactionRecord = {
+  id: string;
+  created_at: string;
+  type: string;
+  item: string | null;
+  qty: number | string | null;
+  amount: number | string | null;
+  note: string | null;
+  raw_text: string | null;
+};
+
+function DashboardSkeleton() {
+  return (
+    <div className="dashboard-skeleton" aria-label="جاري تحميل البيانات" role="status">
+      <span className="skeleton-line skeleton-short" />
+      <span className="skeleton-line skeleton-figure" />
+      <span className="skeleton-line skeleton-strip" />
+      <span className="skeleton-line skeleton-chart" />
+      <span className="skeleton-line skeleton-bottom" />
+    </div>
+  );
+}
 
 export default function Home() {
+  const router = useRouter();
+  const [userId, setUserId] = useState<string | null>(null);
+  const [period, setPeriod] = useState(7);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [renderNow, setRenderNow] = useState<Date | null>(null);
+  const [status, setStatus] = useState<DashboardStatus>('loading');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [retryKey, setRetryKey] = useState(0);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [telegramLinkStatus, setTelegramLinkStatus] = useState<TelegramLinkStatus>('idle');
+  const [telegramCode, setTelegramCode] = useState<string | null>(null);
+  const [telegramExpiresAt, setTelegramExpiresAt] = useState<number | null>(null);
+  const [remainingSeconds, setRemainingSeconds] = useState(0);
+  const [telegramError, setTelegramError] = useState('');
+  const [hasCopiedCode, setHasCopiedCode] = useState(false);
+  const [isTelegramLinkedNotice, setIsTelegramLinkedNotice] = useState(false);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setRenderNow(new Date()));
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!isMounted) return;
+      if (!session) {
+        setUserId(null);
+        router.replace('/login');
+      } else {
+        setUserId(session.user.id);
+      }
+    });
+
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (!isMounted) return;
+      if (error) {
+        setErrorMessage('تعذر التحقق من تسجيل الدخول. حاول مرة تانية.');
+        setStatus('error');
+      } else if (!data.session) {
+        router.replace('/login');
+      } else {
+        setUserId(data.session.user.id);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, [router]);
+
+  useEffect(() => {
+    if (!userId) return;
+    let isCurrentRequest = true;
+
+    async function loadDashboard() {
+      setStatus('loading');
+      setErrorMessage('');
+
+      try {
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('chat_id')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (profileError) throw profileError;
+        if (profile?.chat_id == null) {
+          if (isCurrentRequest) setStatus('unlinked');
+          return;
+        }
+
+        const fromISO = getCairoPeriodStart(period);
+        const { data, error: transactionsError } = await supabase
+          .from('transactions')
+          .select('id, created_at, type, item, qty, amount, note, raw_text')
+          .eq('chat_id', String(profile.chat_id))
+          .gte('created_at', fromISO)
+          .order('created_at', { ascending: false })
+          .limit(1000);
+
+        if (transactionsError) throw transactionsError;
+        const rows = ((data ?? []) as TransactionRecord[]).map((row): Transaction => ({
+          id: row.id,
+          created_at: row.created_at,
+          type: row.type as TransactionType,
+          item: row.item,
+          qty: Number(row.qty ?? 0),
+          amount: Number(row.amount ?? 0),
+          note: row.note,
+          raw_text: row.raw_text,
+        }));
+
+        if (isCurrentRequest) {
+          setTransactions(rows);
+          setStatus(rows.length === 0 ? 'empty' : 'ready');
+        }
+      } catch {
+        if (isCurrentRequest) {
+          setErrorMessage('حصلت مشكلة أثناء تحميل العمليات. حاول مرة تانية.');
+          setStatus('error');
+        }
+      }
+    }
+
+    void loadDashboard();
+    return () => {
+      isCurrentRequest = false;
+    };
+  }, [userId, period, retryKey]);
+
+  useEffect(() => {
+    if (telegramLinkStatus !== 'waiting' || !telegramExpiresAt) return;
+
+    const updateRemaining = () => {
+      const seconds = Math.max(0, Math.ceil((telegramExpiresAt - Date.now()) / 1000));
+      setRemainingSeconds(seconds);
+      if (seconds === 0) setTelegramLinkStatus('expired');
+    };
+
+    updateRemaining();
+    const timer = window.setInterval(updateRemaining, 1000);
+    return () => window.clearInterval(timer);
+  }, [telegramExpiresAt, telegramLinkStatus]);
+
+  useEffect(() => {
+    if (telegramLinkStatus !== 'waiting' || !userId || !telegramExpiresAt) return;
+    const expiresAt = telegramExpiresAt;
+    let isCurrentRequest = true;
+
+    async function checkTelegramLink() {
+      if (Date.now() >= expiresAt) {
+        if (isCurrentRequest) setTelegramLinkStatus('expired');
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('chat_id')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (!isCurrentRequest || error || data?.chat_id == null) return;
+
+      setTelegramLinkStatus('linked');
+      setIsTelegramLinkedNotice(true);
+      setRetryKey((value) => value + 1);
+    }
+
+    const poll = window.setInterval(() => void checkTelegramLink(), 3000);
+    return () => {
+      isCurrentRequest = false;
+      window.clearInterval(poll);
+    };
+  }, [telegramExpiresAt, telegramLinkStatus, userId]);
+
+  const retry = useCallback(() => setRetryKey((value) => value + 1), []);
+
+  async function createTelegramLink() {
+    if (!userId) return;
+    setTelegramLinkStatus('creating');
+    setTelegramError('');
+    setTelegramCode(null);
+
+    const botUsername = process.env.NEXT_PUBLIC_BOT_USERNAME?.trim().replace(/^@/, '');
+    if (!botUsername) {
+      setTelegramError('إعداد اسم بوت تيليجرام ناقص. أضف NEXT_PUBLIC_BOT_USERNAME ثم حاول تاني.');
+      setTelegramLinkStatus('error');
+      return;
+    }
+
+    try {
+      const bytes = new Uint8Array(16);
+      window.crypto.getRandomValues(bytes);
+      const code = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+      const expiresAt = Date.now() + 15 * 60 * 1000;
+      const { error } = await supabase.from('link_codes').insert({
+        code,
+        user_id: userId,
+        expires_at: new Date(expiresAt).toISOString(),
+        used: false,
+      });
+
+      if (error) throw error;
+
+      setTelegramCode(code);
+      setTelegramExpiresAt(expiresAt);
+      setRemainingSeconds(15 * 60);
+      setHasCopiedCode(false);
+      setTelegramLinkStatus('waiting');
+    } catch {
+      setTelegramError('مقدرناش نجهّز الكود، حاول تاني.');
+      setTelegramLinkStatus('error');
+    }
+  }
+
+  async function copyTelegramCommand() {
+    if (!telegramCode) return;
+
+    try {
+      await navigator.clipboard.writeText(`/start ${telegramCode}`);
+      setHasCopiedCode(true);
+    } catch {
+      setTelegramError('مش قادرين ننسخ الأمر تلقائياً. انسخه يدويًا.');
+    }
+  }
+
+  async function signOut() {
+    setIsSigningOut(true);
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      setIsSigningOut(false);
+      setErrorMessage('تعذر تسجيل الخروج. حاول مرة تانية.');
+      setStatus('error');
+      return;
+    }
+    router.replace('/login');
+  }
+
+  const summary = renderNow ? buildDashboardSummary(transactions, period, renderNow) : null;
+  const todayKey = renderNow ? getCairoDayKey(renderNow) : '';
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
+    <main className="dashboard" dir="rtl">
+      <div className="dashboard-shell">
+        <header className="dashboard-header">
+          <Link className="brand-lockup" href="/" aria-label="دفترجي، الصفحة الرئيسية">
+            <span className="brand-mark" aria-hidden="true">
+              <i /><i /><i /><i /><i />
+            </span>
+            <span className="brand-wordmark">دفترجي</span>
+          </Link>
+          <button className="sign-out-button" disabled={isSigningOut} onClick={signOut} type="button">
+            {isSigningOut ? 'جاري الخروج' : 'تسجيل الخروج'}
+          </button>
+        </header>
+
+        {status === 'loading' && <DashboardSkeleton />}
+
+        {isTelegramLinkedNotice && (
+          <p className="telegram-linked-notice" role="status">«تم ربط حسابك ✅»</p>
+        )}
+
+        {status === 'error' && (
+          <section className="state-message" role="alert">
+            <p>{errorMessage || 'حصلت مشكلة أثناء تحميل العمليات. حاول مرة تانية.'}</p>
+            <button className="action-button" onClick={retry} type="button">إعادة المحاولة</button>
+          </section>
+        )}
+
+        {status === 'unlinked' && (
+          <section className="state-message">
+            <p>«حسابك لسه مش مربوط بتيليجرام.»</p>
+            {(telegramLinkStatus === 'idle' || telegramLinkStatus === 'creating') && (
+              <button
+                className="action-button telegram-primary-button"
+                disabled={telegramLinkStatus === 'creating'}
+                onClick={createTelegramLink}
+                type="button"
+              >
+                {telegramLinkStatus === 'creating' ? 'جاري تجهيز الكود…' : 'ربط تيليجرام'}
+              </button>
+            )}
+            {telegramLinkStatus === 'error' && (
+              <div className="telegram-link-error" role="alert">
+                <p>{telegramError || 'مقدرناش نجهّز الكود، حاول تاني.'}</p>
+                <button className="action-button" onClick={createTelegramLink} type="button">حاول تاني</button>
+              </div>
+            )}
+            {telegramLinkStatus === 'waiting' && telegramCode && (
+              <div className="telegram-link-panel" aria-live="polite">
+                <a
+                  className="action-button telegram-primary-button"
+                  href={`https://t.me/${process.env.NEXT_PUBLIC_BOT_USERNAME?.trim().replace(/^@/, '')}?start=${telegramCode}`}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  افتح تيليجرام
+                </a>
+                <div className="telegram-copy-line">
+                  <code dir="ltr">/start {telegramCode}</code>
+                  <button className="action-button" onClick={copyTelegramCommand} type="button">
+                    {hasCopiedCode ? 'تم النسخ' : 'نسخ'}
+                  </button>
+                </div>
+                <p className="telegram-countdown">
+                  الكود صالح لمدة <bdi dir="ltr">{String(Math.floor(remainingSeconds / 60)).padStart(2, '0')}:{String(remainingSeconds % 60).padStart(2, '0')}</bdi>
+                </p>
+                {telegramError && <p className="telegram-copy-error" role="alert">{telegramError}</p>}
+              </div>
+            )}
+            {telegramLinkStatus === 'expired' && (
+              <div className="telegram-link-error" role="status">
+                <p>«الكود انتهى.»</p>
+                <button className="action-button telegram-primary-button" onClick={createTelegramLink} type="button">
+                  إنشاء كود جديد
+                </button>
+              </div>
+            )}
+          </section>
+        )}
+
+        {status === 'empty' && (
+          <section className="state-message empty-message">
+            <p>«لسه مفيش عمليات. ابعت أول فويس نوت للبوت وهتظهر هنا.»</p>
+          </section>
+        )}
+
+        {status === 'ready' && summary && (
+          <>
+            <PeriodChips value={period} onChange={setPeriod} />
+            <NetHero
+              count={summary.count}
+              expenses={summary.expenses}
+              net={summary.net}
+              sales={summary.sales}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+            <DayChart days={summary.days} />
+            <div className="detail-columns">
+              <TopItems items={summary.topItems} />
+              <Ledger todayKey={todayKey} transactions={transactions.slice(0, 10)} />
+            </div>
+            <footer className="dashboard-footer">
+              «كل عملية بتتسجل من فويس أو رسالة على تيليجرام وتظهر هنا.»
+            </footer>
+          </>
+        )}
+      </div>
+    </main>
   );
 }
