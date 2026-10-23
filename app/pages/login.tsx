@@ -4,8 +4,10 @@ import Link from 'next/link';
 import { useState, type FormEvent } from 'react';
 import { motion } from 'framer-motion';
 import { supabase } from '@/lib/supabase';
+import { useRouter } from 'next/navigation';
 
 export default function LoginPage() {
+  const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -26,6 +28,7 @@ export default function LoginPage() {
 
       if (signInError) throw signInError;
       setNotice(`Signed in as ${data.user.email ?? email.trim()}.`);
+      router.replace('/');
       setPassword('');
     } catch (submissionError) {
       setError(
