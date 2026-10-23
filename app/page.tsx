@@ -202,13 +202,23 @@ export default function Home() {
   }, [telegramExpiresAt, telegramLinkStatus]);
 
   useEffect(() => {
-    if (telegramLinkStatus !== 'waiting' || !userId || !telegramExpiresAt) return;
+    const shouldWatchLink =
+      !!userId &&
+      (telegramLinkStatus === 'idle' ||
+        telegramLinkStatus === 'creating' ||
+        telegramLinkStatus === 'waiting' ||
+        telegramLinkStatus === 'expired' ||
+        telegramLinkStatus === 'error' ||
+        status === 'unlinked');
 
-    const expiresAt = telegramExpiresAt;
+    if (!shouldWatchLink) return;
+
     let isCurrentRequest = true;
 
     async function checkTelegramLink() {
-      if (Date.now() >= expiresAt) {
+      if (!userId) return;
+
+      if (telegramLinkStatus === 'waiting' && telegramExpiresAt && Date.now() >= telegramExpiresAt) {
         if (isCurrentRequest) setTelegramLinkStatus('expired');
         return;
       }
@@ -230,7 +240,6 @@ export default function Home() {
         setTelegramLinkStatus('linked');
         setIsTelegramLinkedNotice(true);
         setRetryKey((value) => value + 1);
-        router.refresh();
       }
     }
 
@@ -255,7 +264,7 @@ export default function Home() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', handleFocus);
     };
-  }, [telegramExpiresAt, telegramLinkStatus, userId, isDevelopment, router]);
+  }, [telegramExpiresAt, telegramLinkStatus, userId, status, isDevelopment]);
 
   const retry = useCallback(() => setRetryKey((value) => value + 1), []);
 
