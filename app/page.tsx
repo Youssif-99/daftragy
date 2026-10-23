@@ -68,11 +68,47 @@ export default function Home() {
   const [isSavingChatId, setIsSavingChatId] = useState(false);
 
   const markTelegramLinked = useCallback(() => {
+    setStatus('loading');
     setTelegramLinkStatus('linked');
     setIsTelegramLinkedNotice(true);
     setRetryKey((value) => value + 1);
     router.refresh();
   }, [router]);
+
+  useEffect(() => {
+    if (!userId || (!isTelegramLinkedNotice && telegramLinkStatus !== 'linked')) return;
+
+    let isCurrentRequest = true;
+
+    async function refreshLinkedProfile() {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('chat_id')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (!isCurrentRequest) return;
+
+      if (error) {
+        setStatus('error');
+        setErrorMessage('حصلت مشكلة أثناء تحديث حالة الربط. حاول مرة تانية.');
+        return;
+      }
+
+      if (data?.chat_id == null) {
+        setStatus('unlinked');
+        return;
+      }
+
+      setRetryKey((value) => value + 1);
+      setStatus('loading');
+    }
+
+    void refreshLinkedProfile();
+    return () => {
+      isCurrentRequest = false;
+    };
+  }, [userId, isTelegramLinkedNotice, telegramLinkStatus]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => setRenderNow(new Date()));
