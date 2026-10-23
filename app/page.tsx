@@ -48,6 +48,7 @@ function DashboardSkeleton() {
 
 export default function Home() {
   const router = useRouter();
+  const isDevelopment = process.env.NODE_ENV !== 'production';
   const [userId, setUserId] = useState<string | null>(null);
   const [period, setPeriod] = useState(7);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -65,6 +66,13 @@ export default function Home() {
   const [isTelegramLinkedNotice, setIsTelegramLinkedNotice] = useState(false);
   const [manualChatId, setManualChatId] = useState('');
   const [isSavingChatId, setIsSavingChatId] = useState(false);
+
+  const markTelegramLinked = useCallback(() => {
+    setTelegramLinkStatus('linked');
+    setIsTelegramLinkedNotice(true);
+    setRetryKey((value) => value + 1);
+    router.refresh();
+  }, [router]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => setRenderNow(new Date()));
@@ -109,12 +117,21 @@ export default function Home() {
       setStatus('loading');
       setErrorMessage('');
 
+      if (isDevelopment) {
+        console.log('session user id', userId);
+      }
+
       try {
         const { data: profile, error: profileError } = await supabase
           .from('profiles')
           .select('chat_id')
           .eq('id', userId)
           .maybeSingle();
+
+        if (isDevelopment) {
+          console.log('profile query result', profile);
+          console.log('profile query error', profileError);
+        }
 
         if (profileError) throw profileError;
         if (profile?.chat_id == null) {
@@ -130,6 +147,11 @@ export default function Home() {
           .gte('created_at', fromISO)
           .order('created_at', { ascending: false })
           .limit(1000);
+
+        if (isDevelopment) {
+          console.log('transactions query result', data);
+          console.log('transactions query error', transactionsError);
+        }
 
         if (transactionsError) throw transactionsError;
         const rows = ((data ?? []) as TransactionRecord[]).map((row): Transaction => ({
@@ -147,7 +169,11 @@ export default function Home() {
           setTransactions(rows);
           setStatus(rows.length === 0 ? 'empty' : 'ready');
         }
-      } catch {
+      } catch (error) {
+        if (isDevelopment) {
+          console.log('dashboard fetch error', error);
+        }
+
         if (isCurrentRequest) {
           setErrorMessage('حصلت مشكلة أثناء تحميل العمليات. حاول مرة تانية.');
           setStatus('error');
@@ -159,7 +185,7 @@ export default function Home() {
     return () => {
       isCurrentRequest = false;
     };
-  }, [userId, period, retryKey]);
+  }, [userId, period, retryKey, isDevelopment]);
 
   useEffect(() => {
     if (telegramLinkStatus !== 'waiting' || !telegramExpiresAt) return;
@@ -177,6 +203,7 @@ export default function Home() {
 
   useEffect(() => {
     if (telegramLinkStatus !== 'waiting' || !userId || !telegramExpiresAt) return;
+
     const expiresAt = telegramExpiresAt;
     let isCurrentRequest = true;
 
@@ -192,19 +219,43 @@ export default function Home() {
         .eq('id', userId)
         .maybeSingle();
 
+      if (isDevelopment) {
+        console.log('waiting profile query result', data);
+        console.log('waiting profile query error', error);
+      }
+
       if (!isCurrentRequest || error || data?.chat_id == null) return;
 
-      setTelegramLinkStatus('linked');
-      setIsTelegramLinkedNotice(true);
-      setRetryKey((value) => value + 1);
+      if (isCurrentRequest) {
+        setTelegramLinkStatus('linked');
+        setIsTelegramLinkedNotice(true);
+        setRetryKey((value) => value + 1);
+        router.refresh();
+      }
     }
 
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void checkTelegramLink();
+      }
+    };
+
+    const handleFocus = () => {
+      void checkTelegramLink();
+    };
+
+    void checkTelegramLink();
     const poll = window.setInterval(() => void checkTelegramLink(), 3000);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocus);
+
     return () => {
       isCurrentRequest = false;
       window.clearInterval(poll);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
     };
-  }, [telegramExpiresAt, telegramLinkStatus, userId]);
+  }, [telegramExpiresAt, telegramLinkStatus, userId, isDevelopment, router]);
 
   const retry = useCallback(() => setRetryKey((value) => value + 1), []);
 
@@ -265,9 +316,7 @@ export default function Home() {
       return;
     }
 
-    setTelegramLinkStatus('linked');
-    setIsTelegramLinkedNotice(true);
-    setRetryKey((value) => value + 1);
+    markTelegramLinked();
   }
 
   async function completeTelegramLogin(user: TelegramWidgetUser) {
@@ -300,9 +349,7 @@ export default function Home() {
       return;
     }
 
-    setTelegramLinkStatus('linked');
-    setIsTelegramLinkedNotice(true);
-    setRetryKey((value) => value + 1);
+    markTelegramLinked();
   }
 
   async function copyTelegramCommand() {
