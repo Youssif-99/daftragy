@@ -16,6 +16,7 @@ import {
   type TransactionType,
 } from '@/lib/dashboard';
 import { supabase } from '@/lib/supabase';
+import { TELEGRAM_BOT_USERNAME } from '@/lib/telegram';
 
 type DashboardStatus = 'loading' | 'error' | 'unlinked' | 'empty' | 'ready';
 type TelegramLinkStatus = 'idle' | 'creating' | 'waiting' | 'expired' | 'error' | 'linked';
@@ -209,8 +210,7 @@ export default function Home() {
     setTelegramError('');
     setTelegramCode(null);
 
-    const botUsername = process.env.NEXT_PUBLIC_BOT_USERNAME?.trim().replace(/^@/, '');
-    if (!botUsername) {
+    if (!TELEGRAM_BOT_USERNAME) {
       setTelegramError('إعداد اسم بوت تيليجرام ناقص. أضف NEXT_PUBLIC_BOT_USERNAME ثم حاول تاني.');
       setTelegramLinkStatus('error');
       return;
@@ -318,7 +318,7 @@ export default function Home() {
               <div className="telegram-link-panel" aria-live="polite">
                 <a
                   className="action-button telegram-primary-button"
-                  href={`https://t.me/${process.env.NEXT_PUBLIC_BOT_USERNAME?.trim().replace(/^@/, '')}?start=${telegramCode}`}
+                  href={`https://t.me/${TELEGRAM_BOT_USERNAME}?start=${telegramCode}`}
                   rel="noreferrer"
                   target="_blank"
                 >
