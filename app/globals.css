@@ -578,6 +578,45 @@ a:focus-visible {
   color: var(--out);
 }
 
+.telegram-help {
+  max-width: 520px;
+  color: var(--muted) !important;
+  font-size: 14px !important;
+}
+
+.telegram-help a {
+  color: var(--brand);
+  font-weight: 600;
+}
+
+.telegram-manual-form {
+  display: flex;
+  width: min(100%, 420px);
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  text-align: start;
+}
+
+.telegram-manual-form label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.telegram-manual-form input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 9px 10px;
+}
+
+.telegram-widget-host {
+  min-height: 40px;
+}
+
 .dashboard-skeleton {
   display: flex;
   flex-direction: column;

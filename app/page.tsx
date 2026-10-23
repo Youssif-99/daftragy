@@ -15,8 +15,10 @@ import {
   type Transaction,
   type TransactionType,
 } from '@/lib/dashboard';
+import TelegramLoginButton from '@/components/TelegramLoginButton';
 import { supabase } from '@/lib/supabase';
 import { TELEGRAM_BOT_USERNAME } from '@/lib/telegram';
+import type { TelegramWidgetUser } from '@/lib/telegram-widget';
 
 type DashboardStatus = 'loading' | 'error' | 'unlinked' | 'empty' | 'ready';
 type TelegramLinkStatus = 'idle' | 'creating' | 'waiting' | 'expired' | 'error' | 'linked';
@@ -61,6 +63,8 @@ export default function Home() {
   const [telegramError, setTelegramError] = useState('');
   const [hasCopiedCode, setHasCopiedCode] = useState(false);
   const [isTelegramLinkedNotice, setIsTelegramLinkedNotice] = useState(false);
+  const [manualChatId, setManualChatId] = useState('');
+  const [isSavingChatId, setIsSavingChatId] = useState(false);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => setRenderNow(new Date()));
@@ -241,6 +245,66 @@ export default function Home() {
     }
   }
 
+  async function saveManualChatId() {
+    if (!userId) return;
+    const chatId = manualChatId.trim();
+    if (!/^-?\d{5,20}$/.test(chatId)) {
+      setTelegramError('اكتب رقم حساب تيليجرام صح. هتلاقيه من @userinfobot');
+      setTelegramLinkStatus('error');
+      return;
+    }
+
+    setIsSavingChatId(true);
+    setTelegramError('');
+    const { error } = await supabase.from('profiles').update({ chat_id: chatId }).eq('id', userId);
+    setIsSavingChatId(false);
+
+    if (error) {
+      setTelegramError('مقدرناش نحفظ رقم تيليجرام. تأكد إن صلاحية تعديل الملف الشخصي مفتوحة.');
+      setTelegramLinkStatus('error');
+      return;
+    }
+
+    setTelegramLinkStatus('linked');
+    setIsTelegramLinkedNotice(true);
+    setRetryKey((value) => value + 1);
+  }
+
+  async function completeTelegramLogin(user: TelegramWidgetUser) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) {
+      setTelegramError('سجّل دخول تاني بعدين حاول الربط.');
+      setTelegramLinkStatus('error');
+      return;
+    }
+
+    setTelegramError('');
+    const response = await fetch('/api/telegram/complete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(user),
+    });
+    const result = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+
+    if (!response.ok || !result?.ok) {
+      if (result?.error === 'bot_token_missing') {
+        setTelegramError('ضيف TELEGRAM_BOT_TOKEN في إعدادات المشروع بعدين جرّب زر تيليجرام تاني.');
+      } else {
+        setTelegramError('مقدرناش نأكد تسجيل تيليجرام. استخدم رقم الشات اليدوي تحت.');
+      }
+      setTelegramLinkStatus('error');
+      return;
+    }
+
+    setTelegramLinkStatus('linked');
+    setIsTelegramLinkedNotice(true);
+    setRetryKey((value) => value + 1);
+  }
+
   async function copyTelegramCommand() {
     if (!telegramCode) return;
 
@@ -298,14 +362,44 @@ export default function Home() {
         {status === 'unlinked' && (
           <section className="state-message">
             <p>«حسابك لسه مش مربوط بتيليجرام.»</p>
+            <p className="telegram-help">
+              البوت بيرد «سجّل الأول» لأن n8n مش بيسجّل كود /start. اربط الحساب من هنا، أو انسخ رقمك من
+              {' '}
+              <a href="https://t.me/userinfobot" rel="noreferrer" target="_blank">@userinfobot</a>
+              .
+            </p>
+            <TelegramLoginButton onAuth={completeTelegramLogin} />
+            <form
+              className="telegram-manual-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveManualChatId();
+              }}
+            >
+              <label htmlFor="telegram-chat-id">رقم حساب تيليجرام</label>
+              <div className="telegram-copy-line">
+                <input
+                  id="telegram-chat-id"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  dir="ltr"
+                  placeholder="123456789"
+                  value={manualChatId}
+                  onChange={(event) => setManualChatId(event.target.value)}
+                />
+                <button className="action-button telegram-primary-button" disabled={isSavingChatId} type="submit">
+                  {isSavingChatId ? 'جاري الربط…' : 'ربط'}
+                </button>
+              </div>
+            </form>
             {(telegramLinkStatus === 'idle' || telegramLinkStatus === 'creating') && (
               <button
-                className="action-button telegram-primary-button"
+                className="action-button"
                 disabled={telegramLinkStatus === 'creating'}
                 onClick={createTelegramLink}
                 type="button"
               >
-                {telegramLinkStatus === 'creating' ? 'جاري تجهيز الكود…' : 'ربط تيليجرام'}
+                {telegramLinkStatus === 'creating' ? 'جاري تجهيز الكود…' : 'أو أنشئ كود /start'}
               </button>
             )}
             {telegramLinkStatus === 'error' && (
