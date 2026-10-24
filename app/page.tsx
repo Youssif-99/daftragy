@@ -198,8 +198,7 @@ export default function Home() {
     try {
       const { data, error } = await supabase
         .from('profiles')
-        .update({ chat_id: chatId })
-        .eq('id', userId)
+        .upsert({ id: userId, chat_id: chatId }, { onConflict: 'id' })
         .select('id, chat_id')
         .maybeSingle();
 
